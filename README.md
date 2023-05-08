@@ -1,6 +1,11 @@
 # postgresql-timescaledb-postgis-docker
 
+Setup .env
 ```
-docker build . -t twenty7/postgresql-timescaledb-postgis
-docker push twenty7/postgresql-timescaledb-postgis
+cp .env.example .env
+```
+
+Build and Push to Docker Hub
+```
+./ds_build.sh
 ```
