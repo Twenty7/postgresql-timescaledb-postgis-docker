@@ -1,51 +1,17 @@
-# FROM timescale/timescaledb:2.6.1-pg13
-FROM timescale/timescaledb:2.10.3-pg14
+FROM timescale/timescaledb:2.14.2-pg14
 
 LABEL maintainer="Twenty7 - https://github.com/Twenty7/postgresql-timescaledb-postgis-docker"
-# The following is copied from https://github.com/postgis/docker-postgis/blob/master/14-3.3/alpine/Dockerfile
-# Added 'llvm12-dev' to installed apps
+# The following is copied from https://github.com/postgis/docker-postgis/blob/master/14-3.4/alpine/Dockerfile
 
-ENV POSTGIS_VERSION 3.3.2
-ENV POSTGIS_SHA256 2a6858d1df06de1c5f85a5b780773e92f6ba3a5dc09ac31120ac895242f5a77b
+
+LABEL maintainer="PostGIS Project - https://postgis.net" \
+      org.opencontainers.image.description="PostGIS 3.4.2 spatial database extension with PostgreSQL 14 Alpine" \
+      org.opencontainers.image.source="https://github.com/postgis/docker-postgis"
+
+ENV POSTGIS_VERSION 3.4.2
+ENV POSTGIS_SHA256 17aa8760a5c4fcb9a1fdc750c1c9aca0198a35dd1e320628064c43f178eefed2
 
 RUN set -eux \
-    \
-    &&  if   [ $(printf %.1s "$POSTGIS_VERSION") == 3 ]; then \
-            set -eux ; \
-            #
-            # using only v3.17
-            #
-            #GEOS: https://pkgs.alpinelinux.org/packages?name=geos&branch=v3.17 \
-            export GEOS_ALPINE_VER=3.11 ; \
-            #GDAL: https://pkgs.alpinelinux.org/packages?name=gdal&branch=v3.17 \
-            export GDAL_ALPINE_VER=3.5 ; \
-            #PROJ: https://pkgs.alpinelinux.org/packages?name=proj&branch=v3.17 \
-            export PROJ_ALPINE_VER=9.1 ; \
-            #
-        elif [ $(printf %.1s "$POSTGIS_VERSION") == 2 ]; then \
-            set -eux ; \
-            #
-            # using older branches v3.13; v3.14 for GEOS,GDAL,PROJ
-            #
-            #GEOS: https://pkgs.alpinelinux.org/packages?name=geos&branch=v3.13 \
-            export GEOS_ALPINE_VER=3.8 ; \
-            #GDAL: https://pkgs.alpinelinux.org/packages?name=gdal&branch=v3.14 \
-            export GDAL_ALPINE_VER=3.2 ; \
-            #PROJ: https://pkgs.alpinelinux.org/packages?name=proj&branch=v3.14 \
-            export PROJ_ALPINE_VER=7.2 ; \
-            #
-            \
-            echo 'https://dl-cdn.alpinelinux.org/alpine/v3.14/main'      >> /etc/apk/repositories ; \
-            echo 'https://dl-cdn.alpinelinux.org/alpine/v3.14/community' >> /etc/apk/repositories ; \
-            echo 'https://dl-cdn.alpinelinux.org/alpine/v3.13/main'      >> /etc/apk/repositories ; \
-            echo 'https://dl-cdn.alpinelinux.org/alpine/v3.13/community' >> /etc/apk/repositories ; \
-            \
-        else \
-            set -eux ; \
-            echo ".... unknown \$POSTGIS_VERSION ...." ; \
-            exit 1 ; \
-        fi \
-    \
     && apk add --no-cache --virtual .fetch-deps \
         ca-certificates \
         openssl \
@@ -63,13 +29,19 @@ RUN set -eux \
     \
     && apk add --no-cache --virtual .build-deps \
         \
-        gdal-dev~=${GDAL_ALPINE_VER} \
-        geos-dev~=${GEOS_ALPINE_VER} \
-        proj-dev~=${PROJ_ALPINE_VER} \
+        gdal-dev \
+        geos-dev \
+        proj-dev \
+        proj-util \
+        sfcgal-dev \
+        \
+        # The upstream variable, '$DOCKER_PG_LLVM_DEPS' contains
+        #  the correct versions of 'llvm-dev' and 'clang' for the current version of PostgreSQL.
+        # This improvement has been discussed in https://github.com/docker-library/postgres/pull/1077
+        $DOCKER_PG_LLVM_DEPS \
         \
         autoconf \
         automake \
-        clang-dev \
         cunit-dev \
         file \
         g++ \
@@ -79,36 +51,38 @@ RUN set -eux \
         json-c-dev \
         libtool \
         libxml2-dev \
-        llvm-dev \
         make \
-        pcre-dev \
+        pcre2-dev \
         perl \
         protobuf-c-dev \
     \
-# build PostGIS
-    \
+# build PostGIS - with Link Time Optimization (LTO) enabled
     && cd /usr/src/postgis \
     && gettextize \
     && ./autogen.sh \
     && ./configure \
-        --with-pcredir="$(pcre-config --prefix)" \
+        --enable-lto \
     && make -j$(nproc) \
     && make install \
     \
-# regress check
+# This section is for refreshing the proj data for the regression tests.
+# It serves as a workaround for an issue documented at https://trac.osgeo.org/postgis/ticket/5316
+# This increases the Docker image size by about 1 MB.
+    && projsync --system-directory --file ch_swisstopo_CHENyx06_ETRS \
+    && projsync --system-directory --file us_noaa_eshpgn \
+    && projsync --system-directory --file us_noaa_prvi \
+    && projsync --system-directory --file us_noaa_wmhpgn \
+# This section performs a regression check.
     && mkdir /tempdb \
     && chown -R postgres:postgres /tempdb \
     && su postgres -c 'pg_ctl -D /tempdb init' \
-    && su postgres -c 'pg_ctl -D /tempdb start' \
+    && su postgres -c 'pg_ctl -D /tempdb -c -l /tmp/logfile -o '-F' start ' \
     && cd regress \
     && make -j$(nproc) check RUNTESTFLAGS=--extension   PGUSER=postgres \
-    #&& make -j$(nproc) check RUNTESTFLAGS=--dumprestore PGUSER=postgres \
-    #&& make garden                                      PGUSER=postgres \
     \
     && su postgres -c 'psql    -c "CREATE EXTENSION IF NOT EXISTS postgis;"' \
     && su postgres -c 'psql    -c "CREATE EXTENSION IF NOT EXISTS postgis_raster;"' \
-    ## sfcgal expected with the next alpine release : 3.18
-    #&& su postgres -c 'psql    -c "CREATE EXTENSION IF NOT EXISTS postgis_sfcgal;"' \
+    && su postgres -c 'psql    -c "CREATE EXTENSION IF NOT EXISTS postgis_sfcgal;"' \
     && su postgres -c 'psql    -c "CREATE EXTENSION IF NOT EXISTS fuzzystrmatch; --needed for postgis_tiger_geocoder "' \
     && su postgres -c 'psql    -c "CREATE EXTENSION IF NOT EXISTS address_standardizer;"' \
     && su postgres -c 'psql    -c "CREATE EXTENSION IF NOT EXISTS address_standardizer_data_us;"' \
@@ -120,17 +94,19 @@ RUN set -eux \
     \
     && su postgres -c 'pg_ctl -D /tempdb --mode=immediate stop' \
     && rm -rf /tempdb \
+    && rm -rf /tmp/logfile \
     && rm -rf /tmp/pgis_reg \
 # add .postgis-rundeps
     && apk add --no-cache --virtual .postgis-rundeps \
         \
-        gdal~=${GDAL_ALPINE_VER} \
-        geos~=${GEOS_ALPINE_VER} \
-        proj~=${PROJ_ALPINE_VER} \
+        gdal \
+        geos \
+        proj \
+        sfcgal \
         \
         json-c \
         libstdc++ \
-        pcre \
+        pcre2 \
         protobuf-c \
         \
         # ca-certificates: for accessing remote raster files
@@ -140,7 +116,8 @@ RUN set -eux \
     && cd / \
     && rm -rf /usr/src/postgis \
     && apk del .fetch-deps .build-deps \
-# print PostGIS_Full_Version() for the log. ( experimental & internal )
+# At the end of the build, we print the collected information
+# from the '/_pgis_full_version.txt' file. This is for experimental and internal purposes.
     && cat /_pgis_full_version.txt
 
 COPY ./initdb-postgis.sh /docker-entrypoint-initdb.d/10_postgis.sh
